@@ -14,47 +14,25 @@ import scala.collection._
 import scala.util.control.NonFatal
 
 /**
- * a nicer version of kafka's ConsumerOffsetChecker tool
- * User: pierre
- * Date: 1/22/14
+ * 简单起见，修改了这个默认的OffsetGetter
+ * 用来监管spark streaming (direct stream)打印到zk中的offset
+ * 路径即标准的consumer路径："/consumers" + "/" + group + "/offsets" + "/" + topic + "/" + partition, offset.toString
  */
 class ZKOffsetGetter(theZkClient: ZkClient, zkUtils: ZkUtilsWrapper = new ZkUtilsWrapper) extends OffsetGetter {
 
   override val zkClient = theZkClient
 
   override def processPartition(group: String, topic: String, pid: Int): Option[OffsetInfo] = {
-    try {
       val (offset, stat: Stat) = zkUtils.readData(zkClient, s"${zkUtils.ConsumersPath}/$group/offsets/$topic/$pid")
-      val (owner, _) = zkUtils.readDataMaybeNull(zkClient, s"${zkUtils.ConsumersPath}/$group/owners/$topic/$pid")
-
-      zkUtils.getLeaderForPartition(zkClient, topic, pid) match {
-        case Some(bid) =>
-          val consumerOpt = consumerMap.getOrElseUpdate(bid, getConsumer(bid))
-          consumerOpt map {
-            consumer =>
-              val topicAndPartition = TopicAndPartition(topic, pid)
-              val request =
-                OffsetRequest(immutable.Map(topicAndPartition -> PartitionOffsetRequestInfo(OffsetRequest.LatestTime, 1)))
-              val logSize = consumer.getOffsetsBefore(request).partitionErrorAndOffsets(topicAndPartition).offsets.head
-
-              OffsetInfo(group = group,
-                topic = topic,
-                partition = pid,
-                offset = offset.toLong,
-                logSize = logSize,
-                owner = owner,
-                creation = Time.fromMilliseconds(stat.getCtime),
-                modified = Time.fromMilliseconds(stat.getMtime))
-          }
-        case None =>
-          error("No broker for partition %s - %s".format(topic, pid))
-          None
-      }
-    } catch {
-      case NonFatal(t) =>
-        error(s"Could not parse partition info. group: [$group] topic: [$topic]", t)
-        None
-    }
+      val offsetInfo = OffsetInfo(group = group,
+        topic = topic,
+        partition = pid,
+        offset = offset.toLong,
+      logSize = 0L,  // logSize忽略不统计
+      owner = Option(""),
+      creation = Time.fromMilliseconds(stat.getCtime),
+      modified = Time.fromMilliseconds(stat.getMtime))
+      Option(offsetInfo)
   }
 
   override def getGroups: Seq[String] = {
@@ -95,26 +73,7 @@ class ZKOffsetGetter(theZkClient: ZkClient, zkUtils: ZkUtilsWrapper = new ZkUtil
   }
 
   override def getActiveTopicMap: Map[String, Seq[String]] = {
-    try {
-      zkUtils.getChildren(zkClient, zkUtils.ConsumersPath).flatMap {
-        group =>
-          try {
-            zkUtils.getConsumersPerTopic(zkClient, group, true).keySet.map {
-              key =>
-                key -> group
-            }
-          } catch {
-            case NonFatal(t) =>
-              error(s"could not get consumers for group $group", t)
-              Seq()
-          }
-      }.groupBy(_._1).mapValues {
-        _.unzip._2
-      }
-    } catch {
-      case NonFatal(t) =>
-        error(s"could not get topic maps because of ${t.getMessage}", t)
-        Map()
-    }
+    // Active这个定义暂时对我们没有意义，这里直接使用上面的getTopicMap
+    getTopicMap
   }
 }
