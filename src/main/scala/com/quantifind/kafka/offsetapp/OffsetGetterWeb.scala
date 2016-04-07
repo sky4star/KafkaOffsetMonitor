@@ -22,6 +22,7 @@ import unfiltered.request.{GET, Path, Seg}
 import unfiltered.response.{JsonContent, Ok, ResponseString}
 
 import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.duration._
 import scala.util.control.NonFatal
 
@@ -31,6 +32,14 @@ class OWArgs extends OffsetGetterArgs with UnfilteredWebApp.Arguments {
 
   @Required
   var refresh: FiniteDuration = _
+
+  var overwatchGroupList: String = _
+
+  var overwatchTimes: Int = 3
+
+  var overwatchMailSmtp : String = _
+
+  var overwatchMailPassword : String = _
 
   var dbName: String = "offsetapp"
 
@@ -54,6 +63,8 @@ object OffsetGetterWeb extends UnfilteredWebApp[OWArgs] with Logging {
 
   var reporters: mutable.Set[OffsetInfoReporter] = null
 
+  var problemGroup: ArrayBuffer[String] = ArrayBuffer[String]()
+
   def retryTask[T](fn: => T) {
     try {
       retry(3) {
@@ -67,11 +78,53 @@ object OffsetGetterWeb extends UnfilteredWebApp[OWArgs] with Logging {
 
   def reportOffsets(args: OWArgs) {
     val groups = getGroups(args)
-    groups.foreach {
+    val groupInfos = groups.map {
       g =>
         val inf = getInfo(g, args).offsets.toIndexedSeq
         info(s"reporting ${inf.size}")
         reporters.foreach( reporter => retryTask { reporter.report(inf) } )
+        (g, inf)
+    }
+
+    // Overwatch and send mail if necessary
+    info(s"start monitoring offsets for groups ${args.overwatchGroupList}")
+    args.overwatchGroupList.split(",").foreach {
+      group =>
+        // Get topics
+        val topics = getTopicList(group, args)
+        val isTopicChanged = topics.map {
+          topic =>
+            val offsetHis = args.db.offsetHistory(group, topic)
+            val offsetSumByTime = offsetHis.offsets.groupBy(_.timestamp).mapValues(offsets => offsets.map(_.offset).sum ).toArray.sortBy(_._1).reverse
+            val lastOffsets = offsetSumByTime.take(args.overwatchTimes)
+            lastOffsets.foreach(o => info(s"${o._1}, ${o._2}"))
+
+            // Compare head and tail
+            val head = lastOffsets.head
+            val curr = lastOffsets.last
+            if (head._2 == curr._2) {
+              error(s"offset not move for group ${group}, topic ${topic}, timestamp ${curr._1}, offset ${curr._2}")
+              (topic, false)
+            } else {
+              (topic, true)
+            }
+        }
+
+        // 决定是否报警
+        val problemTopics = isTopicChanged.filter(_._2 == false)
+        if (problemTopics.size > 0) {
+          // 为了降低噪音，我们会忽略已经出问题的group
+          if (problemGroup.contains(group))
+            return
+
+          // Send email
+          problemGroup += group
+          info(s"will send email for group ${group} topic ${problemTopics.mkString(",")}")
+        } else {
+          // 从出问题的列表中删除这个组
+          if (problemGroup.contains(group))
+            problemGroup -= group
+        }
     }
   }
 
@@ -90,6 +143,10 @@ object OffsetGetterWeb extends UnfilteredWebApp[OWArgs] with Logging {
     } finally {
       if (og != null) og.close()
     }
+  }
+
+  def getTopicList(group: String, args: OWArgs) = withOG(args) {
+    _.getTopicList(group)
   }
 
   def getInfo(group: String, args: OWArgs): KafkaInfo = withOG(args) {
