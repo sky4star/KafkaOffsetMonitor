@@ -1,0 +1,1 @@
+nohup java -cp KafkaOffsetMonitor-assembly-0.3.0-SNAPSHOT.jar com.quantifind.kafka.offsetapp.OffsetGetterWeb --zk ZOOKEEPERHOSTS --port 8080 --refresh 30.seconds --retain 2.days --watchGroupList NativeSdkLogFork --watchIntervalInSeconds 900 --emailSender EMAILADDRESS --emailSenderPassword PASSWORD > offsetMonitor.log &

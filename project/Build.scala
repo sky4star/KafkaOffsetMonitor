@@ -17,12 +17,16 @@ object KafkaUtilsBuild extends Build {
       "sonatype-snapshots" at "http://oss.sonatype.org/content/repositories/snapshots",
       "sonatype-releases" at "http://oss.sonatype.org/content/repositories/releases",
       "Typesafe Repository" at "http://repo.typesafe.com/typesafe/releases/",
-      "JBoss Repository" at "http://repository.jboss.org/nexus/content/repositories/releases/"),
+      "JBoss Repository" at "http://repository.jboss.org/nexus/content/repositories/releases/",
+      "softprops-maven" at "http://dl.bintray.com/content/softprops/maven"),
     libraryDependencies ++= Seq(
       "log4j" % "log4j" % "1.2.17",
       "org.scalatest" %% "scalatest" % "2.2.4" % "test",
       "org.mockito" % "mockito-all" % "1.10.19" % "test",
-      "org.apache.kafka" %% "kafka" % "0.8.2.1"))
+      "org.apache.kafka" %% "kafka" % "0.8.2.1",
+      "me.lessis" %% "courier" % "0.1.3",
+      "joda-time" % "joda-time" % "2.9",
+      "org.joda" % "joda-convert" % "1.2"))
 
   val slf4jVersion = "1.6.1"
 
