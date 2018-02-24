@@ -84,81 +84,119 @@ object OffsetGetterWeb extends UnfilteredWebApp[OWArgs] with Logging {
   }
 
   def reportOffsets(args: OWArgs) {
+    try{
+    info(s"reportOffsets")
+    info(getGroups(args).mkString(","))
+    info(s"start monitoring offsets for groups ${args.watchGroupList}")
+
     val groups = getGroups(args)
-    val groupInfos = groups.map {
+    var groupInfos = groups.map {
       g =>
-        val inf = getInfo(g, args).offsets.toIndexedSeq
-        info(s"reporting ${inf.size}")
-        reporters.foreach( reporter => retryTask { reporter.report(inf) } )
-        (g, inf)
+          try {
+            val inf = getInfo(g, args).offsets.toIndexedSeq
+            info(s"reporting ${inf.size}")
+            reporters.foreach(reporter => retryTask {
+              reporter.report(inf)
+            })
+            (g, inf)
+          } catch {
+            case e: Exception =>
+              info(s"get offset throws exception: ${e.getMessage} when getting")
+              (g, null)
+          }
     }
+    groupInfos = groupInfos.filter(_._2 != null)
 
     // Overwatch and send mail if necessary
+    info(s"reportOffsets monitoring offsets")
     info(s"start monitoring offsets for groups ${args.watchGroupList}")
+    info(s"groups ${args.watchGroupList}")
+
+    info(args.watchGroupList.split(",").mkString(":"))
+
+
+    args.watchGroupList.split(",").foreach { group =>
+      info("watch " + group)
+    }
+
+    info("1" + args.watchGroupList.split(",").mkString(":"))
     args.watchGroupList.split(",").foreach {
       group =>
-        // Get topics
-        val topics = getTopicList(group, args)
-        val isTopicChanged = topics.map {
-          topic =>
-            val offsetHis = args.db.offsetHistory(group, topic)
-            val offsetSumByTime = offsetHis.offsets.groupBy(_.timestamp).mapValues(offsets => offsets.map(_.offset).sum).toArray.sortBy(_._1).reverse
+          // Get topics
+          info("getting topic")
+          val topics = getTopicList(group, args)
+          info(topics.mkString(","))
+          val isTopicChanged = topics.map {
+            topic =>
+               try {
+              val offsetHis = args.db.offsetHistory(group, topic)
+              info("offsethis " + offsetHis.offsets.size)
+              val offsetSumByTime = offsetHis.offsets.groupBy(_.timestamp).mapValues(offsets => offsets.map(_.offset).sum).toArray.sortBy(_._1).reverse
 
-            // 检查时间，需要找到时间间隔在x内的
-            val currentTime = new LocalDateTime()
-            val lastOffsets = offsetSumByTime.filter {
-              case (time, offset) =>
-                val jodaTime = new LocalDateTime(time)
-                Seconds.secondsBetween(jodaTime, currentTime).getSeconds <= args.watchIntervalInSeconds
-            }
-            lastOffsets.foreach(o => info(s"${o._1}, ${o._2}"))
-
-            // 检查收尾两个值，offset有没有移动
-            if (lastOffsets.size < 2) {
-              warn(s"only get ${lastOffsets.size} offsets in watch interval ${args.watchIntervalInSeconds}")
-              (topic, true)
-            } else {
-              val head = lastOffsets.head
-              val curr = lastOffsets.last
-              if (head._2 == curr._2) {
-                error(s"offset not move for group ${group}, topic ${topic}, timestamp ${curr._1}, offset ${curr._2}")
-                (topic, false)
-              } else {
-                (topic, true)
+              // 检查时间，需要找到时间间隔在x内的
+              val currentTime = new LocalDateTime()
+              val lastOffsets = offsetSumByTime.filter {
+                case (time, offset) =>
+                  val jodaTime = new LocalDateTime(time)
+                  Seconds.secondsBetween(jodaTime, currentTime).getSeconds <= args.watchIntervalInSeconds
               }
-            }
-        }
+              lastOffsets.foreach(o => info(s"${o._1}, ${o._2}"))
 
-        // 决定是否报警
-        if (args.emailSender != null && args.emailSenderPassword != null) {
-          val problemTopics = isTopicChanged.filter(_._2 == false).map(_._1)
-          if (problemTopics.size > 0) {
-            // 为了降低噪音，我们会忽略已经出问题的group
-            if (problemGroup.contains(group))
-              return
+              // 检查收尾两个值，offset有没有移动
+              if (lastOffsets.size < 2) {
+                warn(s"only get ${lastOffsets.size} offsets in watch interval ${args.watchIntervalInSeconds}")
+                (topic, true)
+              } else {
+                val head = lastOffsets.head
+                val curr = lastOffsets.last
+                if (head._2 == curr._2) {
+                  error(s"offset not move for group ${group}, topic ${topic}, timestamp ${curr._1}, offset ${curr._2}")
+                  (topic, false)
+                } else {
+                  (topic, true)
+                }
+              }
+               } catch {
+                 case e: Exception =>
+                   info(s"get offset throws exception: ${e.getMessage} when getting")
+                   (topic, true)
+               }
+          }
 
-            // 发送邮件
-            problemGroup += group
-            info(s"will send email for group ${group} topic ${problemTopics.mkString(",")}")
-            val mailer = Mailer("smtp.exmail.qq.com", 587)
-                         .auth(true)
-                         .as(args.emailSender, args.emailSenderPassword)
-                         .startTtls(true)()
-            mailer(Envelope.from("lei.yang" `@` "gaeamobile.com")
-                   .to("lei.yang" `@` "gaeamobile.com")
-                   .cc("lei.yang" `@` "gaeamobile.com")
-                   .subject(s"zk offset monitor alert group[${group}] topics[${problemTopics.mkString(",")}]")
-                   .content(Text("FYI"))).onSuccess {
-              case _ => info("message delivered")
+          // 决定是否报警
+          if (args.emailSender != null && args.emailSenderPassword != null) {
+            val problemTopics = isTopicChanged.filter(_._2 == false).map(_._1)
+            if (problemTopics.size > 0) {
+              // 为了降低噪音，我们会忽略已经出问题的group
+              if (problemGroup.contains(group))
+                return
+
+              // 发送邮件
+              problemGroup += group
+              info(s"will send email for group ${group} topic ${problemTopics.mkString(",")}")
+              val mailer = Mailer("smtp.exmail.qq.com", 587)
+                           .auth(true)
+                           .as(args.emailSender, args.emailSenderPassword)
+                           .startTtls(true)()
+              mailer(Envelope.from("lei.yang" `@` "gaeamobile.com")
+                     .to("lei.yang" `@` "gaeamobile.com")
+                     .cc("lei.yang" `@` "gaeamobile.com")
+                     .subject(s"zk offset monitor alert group[${group}] topics[${problemTopics.mkString(",")}]")
+                     .content(Text("FYI"))).onSuccess {
+                case _ => info("message delivered")
+              }
+            } else {
+              // 从出问题的列表中删除这个组
+              if (problemGroup.contains(group))
+                problemGroup -= group
             }
           } else {
-            // 从出问题的列表中删除这个组
-            if (problemGroup.contains(group))
-              problemGroup -= group
+            info("email sender or password is null, will not check status nor send alert")
           }
-        } else {
-          info("email sender or password is null, will not check status nor send alert")
-        }
+    }
+    } catch {
+      case e:Exception =>
+        info(s"parseLogs throws exception: ${e.getMessage} when parsing")
     }
   }
 
@@ -230,7 +268,12 @@ object OffsetGetterWeb extends UnfilteredWebApp[OWArgs] with Logging {
     implicit val formats = Serialization.formats(NoTypeHints) + new TimeSerializer
     args.db.maybeCreate()
 
+    info("create offset reporter")
+
     reporters = createOffsetInfoReporters(args)
+
+    info("schedule jobs")
+    info(args.toString())
 
     schedule(args)
 
